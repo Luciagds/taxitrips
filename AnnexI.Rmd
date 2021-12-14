@@ -1,0 +1,138 @@
+---
+author: "Lucía García-Duarte Sáenz"
+title: "Annex I"
+output: html_document
+---
+
+*This notebook contains a deeper visual analysis of the NYC taxi trips during Thanksgiving 2018.*
+
+
+## Spatial analysis (cont.)
+
+### Chunk 1
+Here it is shown how to extract the latitude and longitud values of each zone from the `.shp` file, so to obtain a complete look-up table containing the zone ID, zone name, borough and coordinates. Also, the weights of the links connecting each node (location) are obtained, which represents the total number of times a trip from one location to another has been done.
+
+Data was saved and exported to represent the network of locations and most common trips using Gephi. Also, it has used in the main Python notebook for further analysis.
+
+```{r node_link, message=FALSE, warning=FALSE}
+df <- read.csv('data/data_filtered.csv',row.names=NULL)
+library(dplyr)
+library(plotly)
+library(raster)
+shp <- shapefile("data/tlc_yellow_geom.shp")# readOGR("data/tlc_yellow_geom.shp")
+shp@data$seq_id <- seq(1:nrow(shp@data))
+# Correct mistake (it can be seen in the file 'taxi+zonelookup.csv' that these three are the same)
+c1 = which(as.integer(shp@data$zone_id)==103)
+shp@data$zone_id[c1[2]] = '104'
+shp@data$zone_id[c1[3]] = '105'
+
+# in order to plot polygons, first fortify the data
+shp@data$id <- rownames(shp@data)
+# create a data.frame from our spatial object
+shpdata <- fortify(shp, region = "id")
+# merge the "fortified" data with the data from our spatial object
+shpdf <- merge(shpdata, shp@data, by = "id")
+
+
+### NODE
+nodes = data.frame(shpdf$zone_id,shpdf$zone_name,shpdf$borough,shpdf$long,shpdf$lat)
+colnames(nodes) <- c('Id', 'Name', 'borough', 'longitude','latitude')
+nodes <- nodes %>% group_by(Id,Name,borough) %>% summarise('longitude' = mean(longitude),'latitude' = mean(latitude))
+write.csv(nodes,'data/nodes.csv',row.names=FALSE)
+
+### LINK
+trips = as.data.frame(paste(df$pickup_location_id, df$dropoff_location_id, sep="_")) 
+colnames(trips) <- 'value' 
+#Count path combinations 
+weights=trips %>% 
+  group_by(value) %>% 
+  dplyr::summarise(weight=n())
+## Define links or edges (source, target, weight)
+links <- data.frame(do.call(rbind, strsplit(as.vector(weights$value), split = "_"))) #Separate start and end station IDs
+names(links) <- c("source", "target")
+links$weight<-weights$weight 
+write.csv(links,'data/links.csv',row.names=FALSE)
+```
+
+### Chunk 2
+
+Different maps showing specific features per location.
+1. Amount of pick-ups 
+2. Amount of drop-offs
+3. Most common picked-up number of passengers
+4. Most common dropped-off number of passengers
+
+```{r message=FALSE, warning=FALSE}
+### Picks and drops count ###
+picks_count <- df %>% group_by(pickup_location_id) %>% dplyr::summarise(ntrips_pu = n())
+drops_count <- df %>% group_by(dropoff_location_id) %>% dplyr::summarise(ntrips_do = n())
+
+aux=as.data.frame(as.integer(shp@data$zone_id))
+colnames(aux) <- 'pickup_location_id'
+picks_count = aux %>% left_join(picks_count)
+colnames(aux) <- 'dropoff_location_id'
+drops_count = aux %>% left_join(drops_count)
+
+shp@data$picks_count <- picks_count$ntrips_pu
+shp@data$drops_count <- drops_count$ntrips_do
+
+### Most common number of passengers ###
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+picks_pass = df %>% group_by(pickup_location_id) %>% dplyr::summarise(npass_pu = getmode(passenger_count))
+drops_pass = df %>% group_by(dropoff_location_id) %>% dplyr::summarise(npass_do = getmode(passenger_count))
+
+colnames(aux) <- 'pickup_location_id'
+picks_pass = aux %>% left_join(picks_pass)
+colnames(aux) <- 'dropoff_location_id'
+drops_pass = aux %>% left_join(drops_pass)
+
+shp@data$picks_pass <- as.character(picks_pass$npass_pu)
+shp@data$drops_pass <- as.character(drops_pass$npass_do)
+
+
+# in order to plot polygons, first fortify the data
+shp@data$id <- rownames(shp@data)
+# create a data.frame from our spatial object
+shpdata <- fortify(shp, region = "id")
+# merge the "fortified" data with the data from our spatial object
+shpdf <- merge(shpdata, shp@data, by = "id")
+
+```
+
+```{r message=FALSE, warning=FALSE}
+p0 <- ggplot() +
+geom_polygon(data = shpdf, aes(x = long, y = lat, group = group, fill = picks_count, text = paste("Zone:",zone_name,"\nBorough:",borough,"\nCount:",picks_count)), color="white", size = 0.2) +
+scale_fill_distiller(palette = "Greens", name = 'Count') +
+coord_equal(ratio = 1.3) +
+theme(panel.background = element_rect(fill = '#D5EEFF', color = 'purple'), plot.title = element_text(vjust = -10)) +
+labs(title = "Amount of pick-ups per zone in NYC during Thanksgiving 2018", x = "Longitude", y = "Latitude")
+p0 %>% ggplotly(tooltip = "text")
+
+p1 <- ggplot() +
+geom_polygon(data = shpdf, aes(x = long, y = lat, group = group, fill = drops_count, text = paste("Zone:",zone_name,"\nBorough:",borough,"\nCount:",drops_count)), color="white", size = 0.2) +
+scale_fill_distiller(palette = "Greens", name = "Count") +
+coord_equal(ratio = 1.3) +
+theme(panel.background = element_rect(fill = '#D5EEFF', color = 'purple'), plot.title = element_text(vjust = -10)) +
+labs(title = "Amount of drop-offs per zone in NYC during Thanksgiving 2018", x = "Longitude", y = "Latitude")
+p1 %>% ggplotly(tooltip = "text")
+```
+
+```{r message=FALSE, warning=FALSE}
+p0 <- ggplot() +
+geom_polygon(data = shpdf, aes(x = long, y = lat, group = group, fill = picks_pass, text = paste("Zone:",zone_name,"\nBorough:",borough,"\nMode:",picks_pass)), color="white", size = 0.2) +
+coord_equal(ratio = 1.3) +
+theme(panel.background = element_rect(fill = '#D5EEFF', color = 'purple')) +
+labs(title = "Most common picked-up number of passengers per zone", x = "Longitude", y = "Latitude", fill = "Mode")
+p0 %>% ggplotly(tooltip = "text")
+
+p1 <- ggplot() +
+geom_polygon(data = shpdf, aes(x = long, y = lat, group = group, fill = drops_pass, text = paste("Zone:",zone_name,"\nBorough:",borough,"\nMode:",drops_pass)), color="white", size = 0.2) +
+coord_equal(ratio = 1.3) +
+theme(panel.background = element_rect(fill = '#D5EEFF', color = 'purple')) +
+labs(title = "Most common dropped-off number of passengers per zone", x = "Longitude", y = "Latitude", fill = "Mode")
+p1 %>% ggplotly(tooltip = "text")
+```
+
